@@ -1,0 +1,182 @@
+name: NestJS CI & Deploy Backend
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [develop]
+
+jobs:
+  build-dev:
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: '**/package-lock.json'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Create .env for development
+        run: |
+          cat <<EOF > .env
+          PORT=${{ secrets.PORT_DEV }}
+          DB_TYPE=${{ secrets.DB_TYPE }}
+          DB_HOST=${{ secrets.DB_HOST_DEV }}
+          DB_PORT=${{ secrets.DB_PORT_DEV }}
+          DB_USERNAME=${{ secrets.DB_USERNAME_DEV }}
+          DB_PASSWORD=${{ secrets.DB_PASSWORD_DEV }}
+          DB_DATABASE=${{ secrets.DB_DATABASE_DEV }}
+          SYNCHRONIZE=${{ secrets.SYNCHRONIZE_DEV }}
+          JWT_SECRET=${{ secrets.JWT_SECRET_DEV }}
+          JWT_EXPIRES_IN=${{ secrets.JWT_EXPIRES_IN_DEV }}
+          EMAIL_HOST=${{ secrets.EMAIL_HOST_DEV }}
+          EMAIL_PORT=${{ secrets.EMAIL_PORT_DEV }}
+          EMAIL_USER=${{ secrets.EMAIL_USER_DEV }}
+          EMAIL_PASS=${{ secrets.EMAIL_PASS_DEV }}
+          COMPANY_NAME=${{ secrets.COMPANY_NAME }}
+          STORAGE_API_URL=${{ secrets.STORAGE_API_URL_DEV }}
+          STORAGE_API_KEY=${{ secrets.STORAGE_API_KEY_DEV }}
+          EOF
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-dev
+          path: dist
+
+  deploy-dev:
+    needs: build-dev
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-dev
+          path: dist
+
+      - name: Upload to Development Server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.BACKEND_DEV_HOST }}
+          username: ${{ secrets.BACKEND_DEV_USER }}
+          password: ${{ secrets.BACKEND_DEV_PASS }}
+          port: ${{ secrets.BACKEND_DEV_PORT }}
+          source: "dist/**/*,package.json,package-lock.json"
+          target: ${{ secrets.BACKEND_DEV_PATH }}
+
+      - name: Run post-deploy commands (development)
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.BACKEND_DEV_HOST }}
+          username: ${{ secrets.BACKEND_DEV_USER }}
+          password: ${{ secrets.BACKEND_DEV_PASS }}
+          port: ${{ secrets.BACKEND_DEV_PORT }}
+          script: |
+            cd ${{ secrets.BACKEND_DEV_PATH }}
+            npm install --production
+            pm2 restart --update-env "api-homol"
+
+  build-prod:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: '**/package-lock.json'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Create .env for production
+        run: |
+          cat <<EOF > .env
+          PORT=${{ secrets.PORT_PROD }}
+          DB_TYPE=${{ secrets.DB_TYPE }}
+          DB_HOST=${{ secrets.DB_HOST_PROD }}
+          DB_PORT=${{ secrets.DB_PORT_PROD }}
+          DB_USERNAME=${{ secrets.DB_USERNAME_PROD }}
+          DB_PASSWORD=${{ secrets.DB_PASSWORD_PROD }}
+          DB_DATABASE=${{ secrets.DB_DATABASE_PROD }}
+          SYNCHRONIZE=${{ secrets.SYNCHRONIZE_PROD }}
+          JWT_SECRET=${{ secrets.JWT_SECRET_PROD }}
+          JWT_EXPIRES_IN=${{ secrets.JWT_EXPIRES_IN_PROD }}
+          EMAIL_HOST=${{ secrets.EMAIL_HOST_PROD }}
+          EMAIL_PORT=${{ secrets.EMAIL_PORT_PROD }}
+          EMAIL_USER=${{ secrets.EMAIL_USER_PROD }}
+          EMAIL_PASS=${{ secrets.EMAIL_PASS_PROD }}
+          COMPANY_NAME=${{ secrets.COMPANY_NAME }}
+          STORAGE_API_URL=${{ secrets.STORAGE_API_URL_PROD }}
+          STORAGE_API_KEY=${{ secrets.STORAGE_API_KEY_PROD }}
+          EOF
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-prod
+          path: dist
+
+  deploy-prod:
+    needs: build-prod
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-prod
+          path: dist
+
+      - name: Upload to Production Server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.BACKEND_PROD_HOST }}
+          username: ${{ secrets.BACKEND_PROD_USER }}
+          password: ${{ secrets.BACKEND_PROD_PASS }}
+          port: ${{ secrets.BACKEND_PROD_PORT }}
+          source: "dist/**/*,package.json,package-lock.json"
+          target: ${{ secrets.BACKEND_PROD_PATH }}
+
+      - name: Run post-deploy commands (production)
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.BACKEND_PROD_HOST }}
+          username: ${{ secrets.BACKEND_PROD_USER }}
+          password: ${{ secrets.BACKEND_PROD_PASS }}
+          port: ${{ secrets.BACKEND_PROD_PORT }}
+          script: |
+            cd ${{ secrets.BACKEND_PROD_PATH }}
+            npm install --production
+            pm2 restart --update-env "api-prod"
