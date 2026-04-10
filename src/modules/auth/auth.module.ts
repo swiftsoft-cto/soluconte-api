@@ -19,7 +19,9 @@ import { EmailModule } from '../email/email.module';
     PassportModule.register({ defaultStrategy: 'jwt' }), // Registra a estratégia 'jwt'
     JwtModule.register({
       secret: process.env.JWT_SECRET || 'defaultSecret',
-      signOptions: { expiresIn: '2h' },
+      signOptions: {
+        expiresIn: process.env.JWT_EXPIRES_IN || '2h',
+      },
     }),
   ],
   providers: [AuthService, JwtStrategy], // Adiciona LocalStrategy aos providers
