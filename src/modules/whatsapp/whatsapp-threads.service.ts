@@ -11,6 +11,12 @@ import { WhatsAppService } from './whatsapp.service';
 import type { WhatsAppInboundPayload } from './whatsapp-inbound.types';
 import { ChatService } from '../agents/chat.service';
 import { UsersService } from '../users/users.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import {
+  NotificationType,
+  NotificationStatus,
+  NotificationChannel,
+} from '../notifications/entities/notification.entity';
 import { broadcastWhatsAppChatMessage } from '../../websocket/ws/whatsapp.websocket';
 
 @Injectable()
@@ -27,6 +33,7 @@ export class WhatsAppThreadsService {
     private readonly whatsAppService: WhatsAppService,
     private readonly chatService: ChatService,
     private readonly usersService: UsersService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   /** Chamado pelo WhatsAppService ao receber mensagem 1:1. */
@@ -121,26 +128,88 @@ export class WhatsAppThreadsService {
       );
     }
 
-    let assistantText: string;
+    let reply: { text: string; fallback: boolean; reason?: string };
     try {
-      assistantText = await this.chatService.whatsAppAutoReply(
+      reply = await this.chatService.whatsAppAutoReply(
         thread.agentId,
         history,
         last.content.trim(),
         currentUser,
       );
     } catch (e) {
+      // ChatService.whatsAppAutoReply nunca deveria lançar — mas se algo
+      // inesperado vazar, logamos e abortamos sem travar o listener inbound.
       this.logger.error(
-        `OpenAI / agente falhou na thread ${threadId}: ${(e as Error)?.message}`,
+        `Erro inesperado no auto-reply (thread ${threadId}): ${(e as Error)?.message}`,
         (e as Error)?.stack,
       );
       return;
     }
 
-    const reply = assistantText?.trim();
-    if (!reply) return;
+    const text = reply.text?.trim();
+    if (!text) return;
 
-    await this.sendOutboundText(threadId, reply);
+    // Envia a resposta (seja da IA ou do fallback) para o usuário final no WhatsApp.
+    try {
+      await this.sendOutboundText(threadId, text);
+    } catch (e) {
+      this.logger.error(
+        `Falha ao enviar resposta no WhatsApp (thread ${threadId}): ${(e as Error)?.message}`,
+        (e as Error)?.stack,
+      );
+    }
+
+    // Se foi fallback, notifica o operador responsável para follow-up manual.
+    if (reply.fallback && actingId) {
+      try {
+        await this.notifyOperatorFallback({
+          userId: actingId,
+          threadId,
+          contactLabel:
+            thread.contactName || thread.contactPhone || thread.waChatId,
+          reason: reply.reason,
+          lastUserMessage: last.content.trim(),
+        });
+      } catch (e) {
+        this.logger.error(
+          `Falha ao notificar operador (thread ${threadId}): ${(e as Error)?.message}`,
+          (e as Error)?.stack,
+        );
+      }
+    } else if (reply.fallback) {
+      this.logger.warn(
+        `Thread ${threadId}: fallback enviado mas sem usuário responsável para notificar.`,
+      );
+    }
+  }
+
+  /**
+   * Cria uma notificação in-app avisando que a resposta automática caiu no fallback
+   * e precisa de intervenção humana.
+   */
+  private async notifyOperatorFallback(params: {
+    userId: string;
+    threadId: string;
+    contactLabel: string;
+    reason?: string;
+    lastUserMessage: string;
+  }): Promise<void> {
+    const snippet =
+      params.lastUserMessage.length > 160
+        ? params.lastUserMessage.slice(0, 157) + '...'
+        : params.lastUserMessage;
+    await this.notificationsService.create({
+      type: NotificationType.SYSTEM,
+      title: 'IA indisponível — atenda manualmente',
+      message: `A resposta automática para ${params.contactLabel} caiu no fallback (${params.reason ?? 'indisponível'}). Última mensagem do cliente: "${snippet}"`,
+      referenceType: 'whatsapp_thread',
+      referenceId: params.threadId,
+      userId: params.userId,
+      scheduledAt: new Date(),
+      status: NotificationStatus.SENT,
+      sentAt: new Date(),
+      channel: NotificationChannel.IN_APP,
+    });
   }
 
   async listThreads(deviceId?: string): Promise<WhatsAppThread[]> {

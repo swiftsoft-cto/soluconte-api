@@ -27,6 +27,21 @@ export class AgentFile {
   @Column({ type: 'json', nullable: true })
   embedding: number[];
 
+  /**
+   * Estado do embedding do arquivo (RAG):
+   *  - ready: embedding gerado e persistido
+   *  - failed: chamada à OpenAI falhou (candidato a retry)
+   *  - unavailable: OpenAI não estava configurada no upload
+   *  - skipped: arquivo sem texto extraído (contentText vazio)
+   */
+  @Column({
+    name: 'embedding_status',
+    type: 'varchar',
+    length: 32,
+    nullable: true,
+  })
+  embeddingStatus: 'ready' | 'failed' | 'unavailable' | 'skipped' | null;
+
   @ManyToOne(() => Agent, (agent) => agent.files, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'agent_id' })
   agent: Agent;

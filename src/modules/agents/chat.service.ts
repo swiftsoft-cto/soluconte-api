@@ -1,18 +1,40 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConversationsService } from './conversations.service';
 import { AgentsService } from './agents.service';
 import { OpenAIService } from './services/openai.service';
 import { AgentContextService } from './services/agent-context.service';
 import { AgentToolsService } from './services/agent-tools.service';
+import {
+  AIFallbackService,
+  AIFallbackResult,
+  AIUnavailableError,
+} from './services/ai-fallback.service';
+
+export interface ChatSendResult {
+  assistantMessage: string;
+  conversationId: string;
+  title?: string;
+  fallback?: boolean;
+  reason?: string;
+}
+
+export interface WhatsAppAutoReplyResult {
+  text: string;
+  fallback: boolean;
+  reason?: string;
+}
 
 @Injectable()
 export class ChatService {
+  private readonly logger = new Logger(ChatService.name);
+
   constructor(
     private readonly conversationsService: ConversationsService,
     private readonly agentsService: AgentsService,
     private readonly openAIService: OpenAIService,
     private readonly agentContextService: AgentContextService,
     private readonly agentToolsService: AgentToolsService,
+    private readonly aiFallbackService: AIFallbackService,
   ) {}
 
   async sendMessage(
@@ -21,7 +43,7 @@ export class ChatService {
     content: string,
     agentId?: string,
     currentUser?: any,
-  ): Promise<{ assistantMessage: string; conversationId: string; title?: string }> {
+  ): Promise<ChatSendResult> {
     let conversation = await this.conversationsService
       .findOne(conversationId, userId)
       .catch(() => null);
@@ -40,12 +62,6 @@ export class ChatService {
       );
     }
 
-    if (!this.openAIService.isAvailable()) {
-      throw new BadRequestException(
-        'OpenAI não configurada. Defina OPENAI_API_KEY no .env.',
-      );
-    }
-
     const cid = conversation.id;
     await this.conversationsService.addMessage(cid, 'user', content);
 
@@ -57,21 +73,41 @@ export class ChatService {
     if (!agent) {
       throw new BadRequestException('Agente da conversa não encontrado.');
     }
-    const extraContext = currentUser
-      ? await this.agentContextService.getContextForAgent(agent, currentUser)
-      : '';
-    const useTools = agent.scope === 'internal' && currentUser != null;
-    const assistantContent = useTools
-      ? await this.openAIService.chatWithTools(
-          agent,
-          history.map((m) => ({ role: m.role, content: m.content })),
-          content,
-          extraContext,
-          this.agentToolsService.getToolsDefinitions(),
-          (name, args) =>
-            this.agentToolsService.executeTool(name, args, currentUser),
-        )
-      : await this.openAIService.chat(agent, history, content, extraContext);
+
+    let assistantContent: string;
+    let fallback: AIFallbackResult | null = null;
+
+    if (!this.openAIService.isAvailable()) {
+      fallback = this.aiFallbackService.build(agent.scope, 'openai_not_configured');
+      assistantContent = fallback.text;
+    } else {
+      const extraContext = currentUser
+        ? await this.agentContextService.getContextForAgent(agent, currentUser)
+        : '';
+      const useTools = agent.scope === 'internal' && currentUser != null;
+      try {
+        assistantContent = useTools
+          ? await this.openAIService.chatWithTools(
+              agent,
+              history.map((m) => ({ role: m.role, content: m.content })),
+              content,
+              extraContext,
+              this.agentToolsService.getToolsDefinitions(),
+              (name, args) =>
+                this.agentToolsService.executeTool(name, args, currentUser),
+            )
+          : await this.openAIService.chat(agent, history, content, extraContext);
+      } catch (err) {
+        const reason =
+          err instanceof AIUnavailableError ? err.reason : 'openai_error';
+        this.logger.error(
+          `Falha na chamada à OpenAI (conversa ${cid}): ${(err as Error)?.message}`,
+          (err as Error)?.stack,
+        );
+        fallback = this.aiFallbackService.build(agent.scope, reason, err);
+        assistantContent = fallback.text;
+      }
+    }
 
     const saved = await this.conversationsService.addMessage(
       cid,
@@ -91,6 +127,9 @@ export class ChatService {
       assistantMessage: saved.content,
       conversationId: cid,
       title: title || conversation.title,
+      ...(fallback
+        ? { fallback: true, reason: fallback.reason }
+        : {}),
     };
   }
 
@@ -103,53 +142,73 @@ export class ChatService {
     messages: { role: string; content: string }[],
     content: string,
     currentUser?: any,
-  ): Promise<{ assistantMessage: string }> {
-    if (!this.openAIService.isAvailable()) {
-      throw new BadRequestException('OpenAI não configurada. Defina OPENAI_API_KEY no .env.');
-    }
+  ): Promise<{ assistantMessage: string; fallback?: boolean; reason?: string }> {
     const agent = await this.agentsService.findOne(agentId, userId);
+
+    if (!this.openAIService.isAvailable()) {
+      const fb = this.aiFallbackService.build(agent.scope, 'openai_not_configured');
+      return { assistantMessage: fb.text, fallback: true, reason: fb.reason };
+    }
+
     const extraContext = currentUser
       ? await this.agentContextService.getContextForAgent(agent, currentUser)
       : '';
     const useTools = agent.scope === 'internal' && currentUser != null;
-    const assistantMessage = useTools
-      ? await this.openAIService.chatWithTools(
-          agent,
-          messages,
-          content,
-          extraContext,
-          this.agentToolsService.getToolsDefinitions(),
-          (name, args) =>
-            this.agentToolsService.executeTool(name, args, currentUser),
-        )
-      : await this.openAIService.chatFromHistory(
-          agent,
-          messages,
-          content,
-          extraContext,
-        );
-    return { assistantMessage };
+    try {
+      const assistantMessage = useTools
+        ? await this.openAIService.chatWithTools(
+            agent,
+            messages,
+            content,
+            extraContext,
+            this.agentToolsService.getToolsDefinitions(),
+            (name, args) =>
+              this.agentToolsService.executeTool(name, args, currentUser),
+          )
+        : await this.openAIService.chatFromHistory(
+            agent,
+            messages,
+            content,
+            extraContext,
+          );
+      return { assistantMessage };
+    } catch (err) {
+      const reason =
+        err instanceof AIUnavailableError ? err.reason : 'openai_error';
+      this.logger.error(
+        `Falha no preview do agente ${agentId}: ${(err as Error)?.message}`,
+        (err as Error)?.stack,
+      );
+      const fb = this.aiFallbackService.build(agent.scope, reason, err);
+      return { assistantMessage: fb.text, fallback: true, reason: fb.reason };
+    }
   }
 
   /**
    * Gera texto de resposta para WhatsApp (sem persistir conversa de agent).
-   * useTools só quando `currentUser` vier do banco (permissões reais).
+   * Nunca lança exceção: retorna um objeto com `fallback=true` se a IA
+   * estiver indisponível ou falhar. O chamador decide o que fazer com a mensagem.
    */
   async whatsAppAutoReply(
     agentId: string,
     history: { role: string; content: string }[],
     lastUserText: string,
     currentUser: any | null,
-  ): Promise<string> {
-    if (!this.openAIService.isAvailable()) {
-      throw new BadRequestException(
-        'OpenAI não configurada. Defina OPENAI_API_KEY no .env.',
-      );
-    }
+  ): Promise<WhatsAppAutoReplyResult> {
     const agent = await this.agentsService.findOneWithFiles(agentId);
     if (!agent || !agent.isActive) {
-      throw new BadRequestException('Agente não encontrado ou inativo.');
+      const fb = this.aiFallbackService.build(
+        agent?.scope ?? 'general',
+        'agent_inactive',
+      );
+      return { text: fb.text, fallback: true, reason: fb.reason };
     }
+
+    if (!this.openAIService.isAvailable()) {
+      const fb = this.aiFallbackService.build(agent.scope, 'openai_not_configured');
+      return { text: fb.text, fallback: true, reason: fb.reason };
+    }
+
     const scope = (agent.scope || 'general').toLowerCase();
     const contextUser =
       currentUser ??
@@ -160,22 +219,39 @@ export class ChatService {
       ? await this.agentContextService.getContextForAgent(agent, contextUser)
       : '';
     const useTools = scope === 'internal' && currentUser != null;
-    if (useTools) {
-      return this.openAIService.chatWithTools(
-        agent,
-        history,
-        lastUserText,
-        extraContext,
-        this.agentToolsService.getToolsDefinitions(),
-        (name, args) =>
-          this.agentToolsService.executeTool(name, args, currentUser),
+
+    try {
+      const text = useTools
+        ? await this.openAIService.chatWithTools(
+            agent,
+            history,
+            lastUserText,
+            extraContext,
+            this.agentToolsService.getToolsDefinitions(),
+            (name, args) =>
+              this.agentToolsService.executeTool(name, args, currentUser),
+          )
+        : await this.openAIService.chatFromHistory(
+            agent,
+            history,
+            lastUserText,
+            extraContext,
+          );
+      const trimmed = (text ?? '').trim();
+      if (!trimmed) {
+        const fb = this.aiFallbackService.build(agent.scope, 'empty_response');
+        return { text: fb.text, fallback: true, reason: fb.reason };
+      }
+      return { text: trimmed, fallback: false };
+    } catch (err) {
+      const reason =
+        err instanceof AIUnavailableError ? err.reason : 'openai_error';
+      this.logger.error(
+        `whatsAppAutoReply falhou (agent ${agentId}): ${(err as Error)?.message}`,
+        (err as Error)?.stack,
       );
+      const fb = this.aiFallbackService.build(agent.scope, reason, err);
+      return { text: fb.text, fallback: true, reason: fb.reason };
     }
-    return this.openAIService.chatFromHistory(
-      agent,
-      history,
-      lastUserText,
-      extraContext,
-    );
   }
 }

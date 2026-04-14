@@ -145,18 +145,33 @@ export class AgentsService {
       fileUrl,
       fileName,
       contentText: contentText ?? null,
+      embeddingStatus: null,
     });
     const saved = await this.agentFileRepository.save(agentFile);
-    if (contentText?.trim() && this.openAIService.isAvailable()) {
-      try {
-        const embedding = await this.openAIService.createEmbedding(contentText);
-        if (embedding.length > 0) {
-          saved.embedding = embedding;
-          await this.agentFileRepository.save(saved);
-        }
-      } catch {
-        // keep file without embedding; RAG will fallback to full content
+
+    if (!contentText?.trim()) {
+      saved.embeddingStatus = 'skipped';
+      await this.agentFileRepository.save(saved);
+      return saved;
+    }
+    if (!this.openAIService.isAvailable()) {
+      saved.embeddingStatus = 'unavailable';
+      await this.agentFileRepository.save(saved);
+      return saved;
+    }
+    try {
+      const embedding = await this.openAIService.createEmbedding(contentText);
+      if (embedding.length > 0) {
+        saved.embedding = embedding;
+        saved.embeddingStatus = 'ready';
+      } else {
+        saved.embeddingStatus = 'failed';
       }
+      await this.agentFileRepository.save(saved);
+    } catch {
+      // keep file without embedding; RAG will fallback to full content
+      saved.embeddingStatus = 'failed';
+      await this.agentFileRepository.save(saved);
     }
     return saved;
   }
