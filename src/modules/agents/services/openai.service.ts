@@ -3,6 +3,7 @@ import OpenAI from 'openai';
 import { Agent } from '../entities/agent.entity';
 import { Message } from '../entities/message.entity';
 import { AgentFile } from '../entities/agent-file.entity';
+import { AIUnavailableError } from './ai-fallback.service';
 
 /** Max messages to send as context to stay within token limits */
 const MAX_CONTEXT_MESSAGES = 30;
@@ -160,7 +161,10 @@ export class OpenAIService {
     extraContext?: string,
   ): Promise<string> {
     if (!this.client) {
-      throw new Error('OpenAI não configurada. Defina OPENAI_API_KEY no .env.');
+      throw new AIUnavailableError(
+        'openai_not_configured',
+        'OpenAI não configurada. Defina OPENAI_API_KEY no .env.',
+      );
     }
     let systemContent = await this.buildSystemMessage(agent, userContent);
     if (extraContext?.trim()) {
@@ -176,7 +180,7 @@ export class OpenAIService {
     });
     const choice = completion.choices?.[0];
     if (!choice?.message?.content) {
-      throw new Error('Resposta vazia da OpenAI.');
+      throw new AIUnavailableError('empty_response', 'Resposta vazia da OpenAI.');
     }
     return choice.message.content;
   }
@@ -191,7 +195,10 @@ export class OpenAIService {
     extraContext?: string,
   ): Promise<string> {
     if (!this.client) {
-      throw new Error('OpenAI não configurada. Defina OPENAI_API_KEY no .env.');
+      throw new AIUnavailableError(
+        'openai_not_configured',
+        'OpenAI não configurada. Defina OPENAI_API_KEY no .env.',
+      );
     }
     let systemContent = await this.buildSystemMessage(agent, userContent);
     if (extraContext?.trim()) {
@@ -207,7 +214,7 @@ export class OpenAIService {
     });
     const choice = completion.choices?.[0];
     if (!choice?.message?.content) {
-      throw new Error('Resposta vazia da OpenAI.');
+      throw new AIUnavailableError('empty_response', 'Resposta vazia da OpenAI.');
     }
     return choice.message.content;
   }
@@ -226,7 +233,10 @@ export class OpenAIService {
     executeTool: (toolName: string, args: Record<string, unknown>) => Promise<string>,
   ): Promise<string> {
     if (!this.client) {
-      throw new Error('OpenAI não configurada. Defina OPENAI_API_KEY no .env.');
+      throw new AIUnavailableError(
+        'openai_not_configured',
+        'OpenAI não configurada. Defina OPENAI_API_KEY no .env.',
+      );
     }
     let systemContent = await this.buildSystemMessage(agent, userContent);
     if (extraContext?.trim()) {
@@ -249,7 +259,7 @@ export class OpenAIService {
       const choice = completion.choices?.[0];
       const msg = choice?.message;
       if (!msg) {
-        throw new Error('Resposta vazia da OpenAI.');
+        throw new AIUnavailableError('empty_response', 'Resposta vazia da OpenAI.');
       }
 
       messages.push({
@@ -281,6 +291,9 @@ export class OpenAIService {
       }
     }
 
-    throw new Error('Limite de iterações de ferramentas atingido.');
+    throw new AIUnavailableError(
+      'openai_error',
+      'Limite de iterações de ferramentas atingido.',
+    );
   }
 }

@@ -13,6 +13,7 @@ import { ChatController } from './chat.controller';
 import { OpenAIService } from './services/openai.service';
 import { AgentContextService } from './services/agent-context.service';
 import { AgentToolsService } from './services/agent-tools.service';
+import { AIFallbackService } from './services/ai-fallback.service';
 import { StorageModule } from '../storage/storage.module';
 import { CompaniesModule } from '../companies/companies.module';
 import { FileManagementModule } from '../file-management/file-management.module';
@@ -32,9 +33,17 @@ import { EmailModule } from '../email/email.module';
     DepartmentsModule,
     EmailModule,
   ],
-  providers: [AgentsService, ConversationsService, ChatService, OpenAIService, AgentContextService, AgentToolsService],
+  providers: [
+    AgentsService,
+    ConversationsService,
+    ChatService,
+    OpenAIService,
+    AgentContextService,
+    AgentToolsService,
+    AIFallbackService,
+  ],
   // Ordem importa: rotas mais específicas (conversations, chat) antes de AgentsController que tem GET :id
   controllers: [ConversationsController, ChatController, AgentsController],
-  exports: [AgentsService, ConversationsService, ChatService],
+  exports: [AgentsService, ConversationsService, ChatService, AIFallbackService],
 })
 export class AgentsModule {}

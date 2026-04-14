@@ -13,11 +13,13 @@ import { WhatsAppDevicesService } from './whatsapp-devices.service';
 import { WhatsAppDevicesController } from './whatsapp-devices.controller';
 import { AgentsModule } from '../agents/agents.module';
 import { UsersModule } from '../users/users.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
     forwardRef(() => AgentsModule),
     UsersModule,
+    NotificationsModule,
     TypeOrmModule.forFeature([
       WhatsAppDevice,
       WhatsAppThread,
